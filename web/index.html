@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Weather-o Diorama</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #111; color: #eee; font: 13px -apple-system, system-ui, sans-serif; overflow: hidden; }
+    #stage { display: flex; align-items: center; justify-content: center; height: 100%; }
+    canvas { display: block; box-shadow: 0 10px 40px #0008; border-radius: 28px; }
+    #ui { position: fixed; top: 12px; left: 12px; display: flex; gap: 8px; flex-wrap: wrap; background: #000a; padding: 8px 10px; border-radius: 10px; }
+    #ui select { font: inherit; }
+    body.render #ui { display: none; }
+    body.render canvas { border-radius: 0; box-shadow: none; }
+    body.render #stage { display: block; }
+  </style>
+  <script type="importmap">
+    { "imports": { "three": "/node_modules/three/build/three.module.js", "three/addons/": "/node_modules/three/examples/jsm/" } }
+  </script>
+</head>
+<body>
+  <div id="ui">
+    <select id="city"></select>
+    <select id="time"></select>
+    <select id="weather"></select>
+    <label><input type="checkbox" id="play" checked /> animate</label>
+  </div>
+  <div id="stage"><canvas id="c"></canvas></div>
+  <script type="module">
+    import { World } from './engine/world.js';
+    import { CITIES, TIMES, WEATHERS } from './engine/catalog.js';
+
+    const q = new URLSearchParams(location.search);
+    const render = q.has('render');
+    if (render) document.body.classList.add('render');
+
+    // Viewer shows a phone-shaped canvas (iPhone Pro aspect) scaled to fit the window.
+    const W = Number(q.get('w') || 1179), H = Number(q.get('h') || 2556);
+    const canvas = document.getElementById('c');
+    let world;
+    if (render) {
+      world = new World(canvas, { width: W, height: H });
+    } else {
+      const s = Math.min((innerHeight - 40) / H, (innerWidth - 40) / W);
+      canvas.style.width = W * s + 'px'; canvas.style.height = H * s + 'px';
+      world = new World(canvas, { width: Math.round(W * s), height: Math.round(H * s), pixelRatio: devicePixelRatio });
+    }
+
+    async function setup({ city, time, weather }) {
+      const mod = await import(`./engine/cities/${city}.js`);
+      world.load(mod.default, { time, weather });
+      world.renderAt(0);
+    }
+    // API used by render.mjs (headless Chrome).
+    window.engine = { setup, renderAt: (u) => world.renderAt(u), loopSeconds: world.loopSeconds, ready: true };
+
+    if (!render) {
+      const sel = (id, opts, v) => { const el = document.getElementById(id); el.innerHTML = opts.map((o) => `<option ${o === v ? 'selected' : ''}>${o}</option>`).join(''); return el; };
+      const state = { city: q.get('city') || 'delhi', time: q.get('time') || 'dusk', weather: q.get('weather') || 'rain' };
+      for (const [id, list] of [['city', CITIES], ['time', TIMES], ['weather', WEATHERS]]) {
+        sel(id, list, state[id]).onchange = (e) => { state[id] = e.target.value; history.replaceState(null, '', '?' + new URLSearchParams(state)); setup(state); };
+      }
+      await setup(state);
+      const t0 = performance.now();
+      const tick = () => {
+        if (document.getElementById('play').checked) world.renderAt(((performance.now() - t0) / 1000 / world.loopSeconds) % 1);
+        requestAnimationFrame(tick);
+      };
+      tick();
+    }
+  </script>
+</body>
+</html>

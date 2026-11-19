@@ -1,0 +1,20 @@
+{
+  "name": "weather-o",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "serve": "node serve.mjs",
+    "sample": "node render.mjs --sample",
+    "all": "node render.mjs --all"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "puppeteer-core": "^25.18.1",
+    "three": "^0.187.0"
+  }
+}

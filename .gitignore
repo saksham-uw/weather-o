@@ -1,0 +1,10 @@
+# secrets
+.env
+vertex.json
+*.json.key
+# deps / build
+node_modules/
+bin/
+out/.frames-*
+.DS_Store
+out/
