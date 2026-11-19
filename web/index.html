@@ -23,6 +23,7 @@
     <select id="city"></select>
     <select id="time"></select>
     <select id="weather"></select>
+    <select id="season"></select>
     <label><input type="checkbox" id="play" checked /> animate</label>
   </div>
   <div id="stage"><canvas id="c"></canvas></div>
@@ -46,9 +47,9 @@
       world = new World(canvas, { width: Math.round(W * s), height: Math.round(H * s), pixelRatio: devicePixelRatio });
     }
 
-    async function setup({ city, time, weather }) {
+    async function setup({ city, time, weather, season = 'normal' }) {
       const mod = await import(`./engine/cities/${city}.js`);
-      world.load(mod.default, { time, weather });
+      world.load(mod.default, { time, weather, season });
       world.renderAt(0);
     }
     // API used by render.mjs (headless Chrome).
@@ -56,8 +57,8 @@
 
     if (!render) {
       const sel = (id, opts, v) => { const el = document.getElementById(id); el.innerHTML = opts.map((o) => `<option ${o === v ? 'selected' : ''}>${o}</option>`).join(''); return el; };
-      const state = { city: q.get('city') || 'delhi', time: q.get('time') || 'dusk', weather: q.get('weather') || 'rain' };
-      for (const [id, list] of [['city', CITIES], ['time', TIMES], ['weather', WEATHERS]]) {
+      const state = { city: q.get('city') || 'toronto', time: q.get('time') || 'dusk', weather: q.get('weather') || 'rain', season: q.get('season') || 'normal' };
+      for (const [id, list] of [['city', CITIES], ['time', TIMES], ['weather', WEATHERS], ['season', ['normal', 'winter']]]) {
         sel(id, list, state[id]).onchange = (e) => { state[id] = e.target.value; history.replaceState(null, '', '?' + new URLSearchParams(state)); setup(state); };
       }
       await setup(state);

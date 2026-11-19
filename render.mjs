@@ -5,6 +5,10 @@
 //   node render.mjs --all [--city delhi]              full matrix (every time x weather)
 //   node render.mjs --city delhi --time dusk --weather rain
 // Options: --size 1179x2556  --fps 30  --still (skip video/Live Photo)  --force
+//          --gl metal|swiftshader (default metal; CI runners have no GPU -> swiftshader)
+//          --season winter (single render)
+//          --time dawn (with --all: only that time of day)
+//          --no-live  render png + mp4 only (Linux CI); Live Photos are made later by tools/finalize.mjs
 //
 // Output: out/<city>/<city>_<time>_<weather>.png      still wallpaper
 //                                   .mp4      seamless loop (preview)
@@ -16,7 +20,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
 import { serve } from './serve.mjs';
-import { CITIES, TIMES, weathersFor } from './web/engine/catalog.js';
+import { CITIES, LOCATIONS, combos, fileStem } from './web/engine/catalog.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const OUT = path.join(ROOT, 'out');
@@ -29,21 +33,26 @@ const [W, H] = opt('--size', '1179x2556').split('x').map(Number);
 const FPS = Number(opt('--fps', 30));
 const FORCE = flag('--force');
 
+const GL = opt('--gl', process.env.RENDER_GL || 'metal');
+
 const SAMPLE = {
-  delhi: [['dawn', 'fog'], ['day', 'partly_cloudy'], ['dusk', 'rain'], ['night', 'thunderstorm']],
-  udaipur: [['dawn', 'clear'], ['day', 'overcast'], ['dusk', 'partly_cloudy'], ['night', 'rain']],
+  toronto: [['dawn', 'partly_cloudy', 'normal'], ['day', 'clear', 'winter'], ['dusk', 'snow', 'normal'], ['night', 'rain', 'normal']],
+  mississauga: [['dawn', 'fog', 'normal'], ['day', 'partly_cloudy', 'normal'], ['dusk', 'clear', 'winter'], ['night', 'thunderstorm', 'normal']],
+  delhi: [['dawn', 'fog', 'normal'], ['day', 'partly_cloudy', 'normal'], ['dusk', 'rain', 'normal'], ['night', 'thunderstorm', 'normal']],
+  udaipur: [['dawn', 'clear', 'normal'], ['day', 'overcast', 'normal'], ['dusk', 'partly_cloudy', 'normal'], ['night', 'rain', 'normal']],
 };
 
+// job = [city, { time, weather, season }]
 let jobs = [];
-if (flag('--sample')) jobs = Object.entries(SAMPLE).flatMap(([c, l]) => l.map(([t, w]) => [c, t, w]));
-else if (flag('--all')) {
-  const cities = opt('--city') ? [opt('--city')] : CITIES;
-  jobs = cities.flatMap((c) => TIMES.flatMap((t) => weathersFor(c).map((w) => [c, t, w])));
-} else jobs = [[opt('--city', 'delhi'), opt('--time', 'day'), opt('--weather', 'clear')]];
+const only = opt('--city') ? opt('--city').split(',') : null;
+if (flag('--sample')) jobs = Object.entries(SAMPLE).filter(([c]) => !only || only.includes(c)).flatMap(([c, l]) => l.map(([time, weather, season]) => [c, { time, weather, season }]));
+else if (flag('--all')) jobs = (only || CITIES).flatMap((c) => combos(c).filter((k) => !opt('--time') || k.time === opt('--time')).map((k) => [c, k]));
+else jobs = [[opt('--city', 'delhi'), { time: opt('--time', 'day'), weather: opt('--weather', 'clear'), season: opt('--season', 'normal') }]];
 
 // Build the Live Photo tool on first use (compiled binary isn't kept in git).
 const LIVEPHOTO = path.join(ROOT, 'bin', 'livephoto');
-if (!flag('--still') && !fs.existsSync(LIVEPHOTO)) {
+const LIVE = !flag('--still') && !flag('--no-live');
+if (LIVE && !fs.existsSync(LIVEPHOTO)) {
   console.log('building bin/livephoto…');
   fs.mkdirSync(path.dirname(LIVEPHOTO), { recursive: true });
   execFileSync('swiftc', ['-O', path.join(ROOT, 'tools', 'livephoto.swift'), '-o', LIVEPHOTO], { stdio: 'inherit' });
@@ -54,7 +63,14 @@ const port = server.address().port;
 const browser = await puppeteer.launch({
   executablePath: CHROME,
   headless: true,
-  args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--enable-webgl'],
+  args: [
+    ...(GL === 'swiftshader'
+      ? ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--enable-webgl', '--ignore-gpu-blocklist']
+      : ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--enable-webgl']),
+    // GitHub's Ubuntu runners block Chrome's user-namespace sandbox.
+    ...(process.env.CI ? ['--no-sandbox'] : []),
+  ],
+  protocolTimeout: 600_000,
 });
 const page = await browser.newPage();
 page.on('pageerror', (e) => console.error('page error:', e.message));
@@ -66,13 +82,14 @@ const loopSeconds = await page.evaluate(() => window.engine.loopSeconds);
 
 const grab = (u) => page.evaluate((u) => { window.engine.renderAt(u); return document.getElementById('c').toDataURL('image/png').split(',')[1]; }, u);
 
-for (const [city, time, weather] of jobs) {
+for (const [city, combo] of jobs) {
   const dir = path.join(OUT, city);
   fs.mkdirSync(dir, { recursive: true });
-  const stem = path.join(dir, `${city}_${time}_${weather}`);
-  if (fs.existsSync(`${stem}.png`) && (flag('--still') || fs.existsSync(`${stem}.MOV`)) && !FORCE) { console.log(`skip ${path.basename(stem)}`); continue; }
+  const stem = path.join(dir, fileStem(city, combo));
+  const doneMarker = flag('--still') ? `${stem}.png` : LIVE ? `${stem}.MOV` : `${stem}.mp4`;
+  if (fs.existsSync(`${stem}.png`) && fs.existsSync(doneMarker) && !FORCE) { console.log(`skip ${path.basename(stem)}`); continue; }
   const t0 = Date.now();
-  await page.evaluate((s) => window.engine.setup(s), { city, time, weather });
+  await page.evaluate((s) => window.engine.setup(s), { city, ...combo });
   fs.writeFileSync(`${stem}.png`, Buffer.from(await grab(0), 'base64'));
   if (!flag('--still')) {
     // Frames are piped straight into ffmpeg (no temp files on disk).
@@ -88,7 +105,7 @@ for (const [city, time, weather] of jobs) {
     }
     ff.stdin.end();
     await done;
-    execFileSync(LIVEPHOTO, [`${stem}.png`, `${stem}.mp4`, stem]);
+    if (LIVE) execFileSync(LIVEPHOTO, [`${stem}.png`, `${stem}.mp4`, stem]);
   }
   console.log(`${path.basename(stem)}  ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 }
@@ -96,7 +113,7 @@ for (const [city, time, weather] of jobs) {
 // 2x2 preview per sample city (plays each loop 3x).
 if (flag('--sample')) {
   for (const [city, list] of Object.entries(SAMPLE)) {
-    const vids = list.map(([t, w]) => path.join(OUT, city, `${city}_${t}_${w}.mp4`));
+    const vids = list.map(([time, weather, season]) => path.join(OUT, city, `${fileStem(city, { time, weather, season })}.mp4`));
     if (!vids.every((v) => fs.existsSync(v))) continue;
     const out = path.join(OUT, city, `${city}_preview.mp4`);
     const scale = vids.map((_, i) => `[${i}:v]scale=540:1170,setsar=1[v${i}]`).join(';');
@@ -105,6 +122,14 @@ if (flag('--sample')) {
       '-c:v', 'libx264', '-crf', '20', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', out]);
     console.log(`preview -> ${path.relative(ROOT, out)}`);
   }
+}
+
+// Manifest the Shortcut reads: cities with coordinates + every available file stem.
+if (flag('--manifest')) {
+  const manifest = { cities: LOCATIONS, files: Object.fromEntries(CITIES.map((c) => [c, combos(c).map((k) => fileStem(c, k))])) };
+  fs.mkdirSync(OUT, { recursive: true });
+  fs.writeFileSync(path.join(OUT, 'manifest.json'), JSON.stringify(manifest, null, 2));
+  console.log('manifest -> out/manifest.json');
 }
 
 await browser.close();

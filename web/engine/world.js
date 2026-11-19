@@ -113,13 +113,14 @@ export class World {
     c.updateProjectionMatrix();
   }
 
-  load(buildCity, { time = 'day', weather = 'clear' } = {}) {
+  load(buildCity, { time = 'day', weather = 'clear', season = 'normal' } = {}) {
     const T = TIMES[time], W = WEATHER[weather];
     if (!T || !W) throw new Error(`unknown time/weather ${time}/${weather}`);
     resetMaterials();
     this.composer?.dispose();
     const scene = (this.scene = new THREE.Scene());
-    const ctx = (this.ctx = { animate: [], pointLights: [], shared: makeShared(), snowable: [] });
+    const winter = season === 'winter' || weather === 'snow';
+    const ctx = (this.ctx = { animate: [], pointLights: [], shared: makeShared(), snowable: [], foliage: [], emissives: [], winter });
     this.env = { wind: W.wind, time, weather };
 
     // Sky: plain gradient, darkened/greyed by weather.
@@ -173,7 +174,10 @@ export class World {
     if (W.snow) this.addPrecip(W.snow, 'snow');
     if (W.fog) this.addFog(time);
     if (W.lightning) this.addLightning();
-    if (weather === 'snow') for (const m of new Set(ctx.snowable)) m.color.lerp(new THREE.Color('#f4f6fa'), 0.75);
+    if (winter) {
+      for (const m of new Set(ctx.snowable)) m.color.lerp(new THREE.Color('#f4f6fa'), 0.75);
+      for (const m of new Set(ctx.foliage)) m.color.lerp(new THREE.Color('#e9eef2'), 0.6);
+    }
     if (weather === 'rain' || weather === 'thunderstorm') for (const m of new Set(ctx.snowable)) { m.roughness = 0.25; m.color.multiplyScalar(0.8); }
 
     // Post: subtle bloom so lit windows and lamps glow at night.
@@ -189,8 +193,11 @@ export class World {
   addClouds(W) {
     const r = rng(11), clouds = [];
     const night = this.env.time === 'night';
+    // Warm dawn/dusk light turns grey clouds brown (reads as smoke): give them a cool self-tint instead.
+    const warm = this.env.time === 'dawn' || this.env.time === 'dusk';
+    const grey = W.clouds > 3;
     const m = new THREE.MeshStandardMaterial({ color: W.cloudColor, roughness: 1, flatShading: true,
-      emissive: W.cloudColor, emissiveIntensity: night ? 0.12 : 0.04 });
+      emissive: warm && grey ? '#8d96aa' : W.cloudColor, emissiveIntensity: night ? 0.12 : warm && grey ? 0.35 : 0.04 });
     const slotXZ = (k, rad) => [Math.cos((k / 8) * TAU) * rad, Math.sin((k / 8) * TAU) * rad];
     const slots = Array.from({ length: 8 }, (_, k) => k)
       .filter((k) => { const [x, z] = slotXZ(k, 3); return Math.hypot(x - this.peak.x, z - this.peak.z) > 3.2; })
@@ -353,6 +360,7 @@ export class World {
     sh.bulb.emissiveIntensity = L * 5;
     sh.sign.emissiveIntensity = L * 0.8;
     for (const p of this.ctx.pointLights) p.intensity = L * 2;
+    for (const [m, k] of this.ctx.emissives) m.emissiveIntensity = L * k;
     for (const f of this.ctx.animate) f(u, this.env);
     this.composer.render();
   }

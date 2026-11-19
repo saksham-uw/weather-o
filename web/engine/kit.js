@@ -87,6 +87,7 @@ export function tree(group, ctx, x, z, { s = 1, color = '#4f8a3c', trunk = '#6b4
   for (let i = 0; i < blobs; i++) {
     const r = (0.3 + rand() * 0.12) * s;
     crown.add(mesh(new THREE.IcosahedronGeometry(r, 0), mat(color), (rand() - 0.5) * 0.25 * s, 0.15 * s + i * 0.18 * s, (rand() - 0.5) * 0.25 * s));
+    ctx.foliage.push(mat(color));
   }
   t.add(crown);
   group.add(t);
@@ -116,15 +117,98 @@ export function autoRickshaw() {
 
 // Moves N identical objects around a closed path, each advancing 1/N of it per loop,
 // so the configuration at u=1 is identical to u=0 (seamless loop).
-export function loopAlongPath(ctx, objects, pointAt) {
+export function loopAlongPath(ctx, objects, pointAt, step = 1) {
   const n = objects.length;
   ctx.animate.push((u) => {
     objects.forEach((o, i) => {
-      const s = ((i + u) / n) % 1;
+      const s = ((i + u * step) / n) % 1;
       const p = pointAt(s);
       const q = pointAt((s + 0.002) % 1);
       o.position.set(p.x, p.y ?? 0, p.z);
       o.rotation.y = Math.atan2(-(q.z - p.z), q.x - p.x);
     });
   });
+}
+
+// Closed rounded-rectangle route sampled by arc length: { points, at(s) } with s in [0,1).
+export function roundedRect(x0, z0, x1, z1, rad, samples = 480) {
+  const raw = [];
+  const corners = [[x1 - rad, z1 - rad, 0], [x0 + rad, z1 - rad, Math.PI / 2], [x0 + rad, z0 + rad, Math.PI], [x1 - rad, z0 + rad, Math.PI * 1.5]];
+  for (const [cx, cz, a0] of corners) for (let k = 0; k <= 12; k++) {
+    const a = a0 + (k / 12) * (Math.PI / 2);
+    raw.push(new THREE.Vector3(cx + Math.cos(a) * rad, 0, cz + Math.sin(a) * rad));
+  }
+  const curve = new THREE.CatmullRomCurve3(raw, true, 'centripetal');
+  const points = curve.getSpacedPoints(samples);
+  return { points, at: (s) => curve.getPointAt(((s % 1) + 1) % 1) };
+}
+
+// Flat strip (road / track bed) following a closed list of points.
+export function ribbon(points, width, material, y = 0.01) {
+  const pos = [], idx = [];
+  const n = points.length;
+  for (let i = 0; i < n; i++) {
+    const p = points[i], q = points[(i + 1) % n];
+    const dx = q.x - p.x, dz = q.z - p.z, l = Math.hypot(dx, dz) || 1;
+    const nx = (-dz / l) * width / 2, nz = (dx / l) * width / 2;
+    pos.push(p.x + nx, y, p.z + nz, p.x - nx, y, p.z - nz);
+    const a = i * 2, b = ((i + 1) % n) * 2;
+    idx.push(a, b, a + 1, b, b + 1, a + 1);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, material);
+  m.receiveShadow = true;
+  return m;
+}
+
+function wheels(g, xs, zs, r = 0.07) {
+  for (const x of xs) for (const z of zs) {
+    const w = mesh(new THREE.CylinderGeometry(r, r, 0.05, 8), mat('#151515'), x, r, z);
+    w.rotation.x = Math.PI / 2;
+    g.add(w);
+  }
+}
+
+// TTC-style red streetcar. Faces +x.
+export function streetcar(ctx) {
+  const g = new THREE.Group();
+  g.add(box(1.1, 0.32, 0.3, mat('#d92b2b'), 0, 0.1, 0));
+  g.add(box(1.1, 0.06, 0.31, mat('#f4f1ea'), 0, 0.2, 0));
+  g.add(box(1.0, 0.12, 0.31, ctx.shared.window, 0, 0.28, 0));
+  g.add(box(1.04, 0.05, 0.28, mat('#5a5f66'), 0, 0.42, 0));
+  const pole = box(0.03, 0.03, 0.5, mat('#333'), -0.2, 0.47, 0);
+  pole.rotation.z = 0.5;
+  g.add(pole);
+  wheels(g, [-0.38, 0.38], [-0.1, 0.1], 0.06);
+  return g;
+}
+
+// MiWay-style city bus (white with blue band). Faces +x.
+export function bus(ctx) {
+  const g = new THREE.Group();
+  g.add(box(1.0, 0.36, 0.32, mat('#f3f4f6'), 0, 0.08, 0));
+  g.add(box(1.01, 0.08, 0.33, mat('#1f5fbf'), 0, 0.1, 0));
+  g.add(box(0.9, 0.12, 0.33, ctx.shared.window, -0.03, 0.27, 0));
+  g.add(box(0.03, 0.14, 0.26, mat('#9fd0e6', { roughness: 0.2 }), 0.5, 0.25, 0));
+  wheels(g, [-0.32, 0.32], [-0.14, 0.14]);
+  return g;
+}
+
+// Generic car. Faces +x.
+export function car(color) {
+  const g = new THREE.Group();
+  g.add(box(0.5, 0.13, 0.26, mat(color), 0, 0.05, 0));
+  g.add(box(0.28, 0.11, 0.24, mat('#a9c8d8', { roughness: 0.2 }), -0.03, 0.18, 0));
+  wheels(g, [-0.15, 0.15], [-0.12, 0.12], 0.05);
+  return g;
+}
+
+// Extra emissive materials (glass towers etc.) whose glow follows the lights level: ctx.glow(mat, strength).
+export function glowMaterial(ctx, color, emissive, k = 1, opts = {}) {
+  const m = new THREE.MeshStandardMaterial({ color, emissive, emissiveIntensity: 0, flatShading: true, roughness: 0.35, ...opts });
+  ctx.emissives.push([m, k]);
+  return m;
 }

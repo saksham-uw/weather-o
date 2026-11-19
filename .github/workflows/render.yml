@@ -1,0 +1,64 @@
+# One-off renderer: run manually from the Actions tab ("Run workflow").
+# Renders every city x time x weather (x season) and publishes them to the `wallpapers` release, whose files
+# are then fetched by the iOS Shortcut at:
+#   https://github.com/<owner>/<repo>/releases/download/wallpapers/<city>_<time>_<weather>[_winter].png|.HEIC|.MOV|.mp4
+name: Render wallpapers
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    name: render ${{ matrix.city }} / ${{ matrix.time }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        city: [toronto, mississauga, delhi, udaipur]
+        time: [dawn, day, dusk, night]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - name: Render
+        env:
+          CHROME: /usr/bin/google-chrome
+          RENDER_GL: swiftshader
+        run: node render.mjs --all --city ${{ matrix.city }} --time ${{ matrix.time }} --no-live
+      - uses: actions/upload-artifact@v4
+        with:
+          name: render-${{ matrix.city }}-${{ matrix.time }}
+          path: out/
+          retention-days: 3
+
+  publish:
+    needs: render
+    if: ${{ !cancelled() }}
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: render-*
+          path: out/
+          merge-multiple: true
+      - name: Build Live Photos + manifest
+        run: node tools/finalize.mjs
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view wallpapers >/dev/null 2>&1 || \
+            gh release create wallpapers --title "Wallpapers" --notes "Rendered diorama wallpapers. Regenerate via the 'Render wallpapers' workflow."
+          # stills, loops, Live Photo pairs and the manifest
+          find out -type f \( -name '*.png' -o -name '*.mp4' -o -name '*.HEIC' -o -name '*.MOV' -o -name 'manifest.json' \) -print0 \
+            | xargs -0 -n 50 gh release upload wallpapers --clobber
+          echo "Published $(find out -type f | wc -l) files"
